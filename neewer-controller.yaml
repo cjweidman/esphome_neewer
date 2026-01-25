@@ -100,30 +100,6 @@ esp32_ble_tracker:
               device.address_str().c_str(), 
               device.get_rssi()
             );
-            std::string s = device.address_str();
-            auto select = id(mac_select);
-
-            if (select->has_option(s)) {
-              return;
-            }
-
-            ESP_LOGI(
-              "neewer", 
-              "Adding new neewer light %s (MAC: %s, RSSI: %d) to address list", 
-              device.get_name().c_str(), 
-              device.address_str().c_str(), 
-              device.get_rssi()
-            );
-            
-            // Build new options list with all current options plus the new device
-            std::vector<const char*> current_options;
-            for (const auto& opt : select->traits.get_options()) {
-              current_options.push_back(opt);
-            }
-            current_options.push_back(device.address_str().c_str());
-            
-            // Create initializer list and set options
-            select->traits.set_options({current_options.begin(), current_options.end()});
 
             if (device.get_rssi() > id(closest_rssi)) {
               id(closest_address) = device.address_str();

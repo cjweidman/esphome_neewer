@@ -41,10 +41,7 @@ globals:
     initial_value: "-127"
   - id: closest_address
     type: std::string
-    initial_value: ""
-  - id: discovered_devices
-    type: std::vector<std::string>
-    initial_value: "{}"
+    initial_value: '""'
 
 dashboard_import:
   package_import_url: github://DanielBaulig/neewer-controller/neewer-controller.yaml
@@ -78,7 +75,6 @@ esphome:
               (uint8_t) (mac_address_raw >> 0) & 0xff);
 
           auto select = id(mac_select);
-          id(discovered_devices) = {"None", mac_address_s};
           select->traits.set_options({"None", mac_address_s.c_str()});
           select->publish_state(mac_address_s);
     
@@ -119,15 +115,15 @@ esp32_ble_tracker:
               device.get_rssi()
             );
             
-            // Store device address in global vector
-            id(discovered_devices).push_back(device.address_str());
-            
-            // Convert vector to const char* array for set_options
-            std::vector<const char*> options_ptrs;
-            for (const auto& addr : id(discovered_devices)) {
-              options_ptrs.push_back(addr.c_str());
+            // Build new options list with all current options plus the new device
+            std::vector<const char*> current_options;
+            for (const auto& opt : select->traits.get_options()) {
+              current_options.push_back(opt);
             }
-            select->traits.set_options({options_ptrs.data(), options_ptrs.size()});
+            current_options.push_back(device.address_str().c_str());
+            
+            // Create initializer list and set options
+            select->traits.set_options({current_options.begin(), current_options.end()});
 
             if (device.get_rssi() > id(closest_rssi)) {
               id(closest_address) = device.address_str();
@@ -236,11 +232,11 @@ button:
         - lambda: |-
             auto select = id(mac_select);
             auto mac_address = select->current_option();
-            id(discovered_devices) = {"None"};
             if (mac_address != "None") {
-              id(discovered_devices).push_back(mac_address);
+              select->traits.set_options({"None", mac_address.c_str()});
+            } else {
+              select->traits.set_options({"None"});
             }
-            select->traits.set_options({"None", mac_address != "None" ? mac_address.c_str() : nullptr});
             id(ble_tracker)->start_scan();
             id(scanning).publish_state(true);
 

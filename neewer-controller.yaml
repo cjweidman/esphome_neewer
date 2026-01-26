@@ -222,8 +222,8 @@ button:
             // Update select options to include the new device
             auto select = id(mac_select);
             auto current = select->current_option();
-            if (current != "None" && current != id(closest_address).c_str()) {
-              select->traits.set_options({"None", current, id(closest_address).c_str()});
+            if (current != "None" && current != id(closest_address)) {
+              select->traits.set_options({"None", current.c_str(), id(closest_address).c_str()});
             } else {
               select->traits.set_options({"None", id(closest_address).c_str()});
             }
@@ -239,7 +239,7 @@ button:
             auto select = id(mac_select);
             auto mac_address = select->current_option();
             if (mac_address != "None") {
-              select->traits.set_options({"None", mac_address});
+              select->traits.set_options({"None", mac_address.c_str()});
             } else {
               select->traits.set_options({"None"});
             }

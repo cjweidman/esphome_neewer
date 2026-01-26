@@ -1,17 +1,74 @@
-# These substitutions allow the end user to override certain values
 substitutions:
   name: "neewer-controller"
-  
+
+esphome:
+  name: "${name}"
+  name_add_mac_suffix: true
+  project:
+    name: DanielBaulig.neewer-controller
+    version: "0.2.3"
+  on_boot:
+    then:
+      - lambda: |-
+          // BLE tracker will start off scanning
+          id(scanning).publish_state(true);
+
+          // Init prefs store
+          id(paired_mac_address_store) = global_preferences->make_preference(12345678);
+
+          // Load previously paired MAC from flash (uint64)
+          uint64_t mac_address_raw = 0;
+          if (!id(paired_mac_address_store).load(&mac_address_raw) || !mac_address_raw) {
+            // Ensure we at least have "None" option
+            id(mac_options).clear();
+            id(mac_options).push_back("None");
+            // Rebuild select options
+            esphome::FixedVector<const char *> opt_ptrs;
+            opt_ptrs.init(id(mac_options).size());
+            for (auto &s : id(mac_options)) opt_ptrs.push_back(s.c_str());
+            id(mac_select)->traits.set_options(opt_ptrs);
+            id(mac_select)->publish_state("None");
+            return;
+          }
+
+          // Convert raw MAC -> string
+          auto mac_address_s = str_snprintf(
+            "%02X:%02X:%02X:%02X:%02X:%02X",
+            17,
+            (uint8_t) (mac_address_raw >> 40) & 0xff,
+            (uint8_t) (mac_address_raw >> 32) & 0xff,
+            (uint8_t) (mac_address_raw >> 24) & 0xff,
+            (uint8_t) (mac_address_raw >> 16) & 0xff,
+            (uint8_t) (mac_address_raw >> 8) & 0xff,
+            (uint8_t) (mac_address_raw >> 0) & 0xff
+          );
+
+          // Build persistent options list: ["None", "<paired-mac>"]
+          id(mac_options).clear();
+          id(mac_options).push_back("None");
+          id(mac_options).push_back(mac_address_s);
+
+          // Rebuild select options using pointer vector into persistent strings
+          esphome::FixedVector<const char *> opt_ptrs;
+          opt_ptrs.init(id(mac_options).size());
+          for (auto &s : id(mac_options)) opt_ptrs.push_back(s.c_str());
+
+          id(mac_select)->traits.set_options(opt_ptrs);
+          id(mac_select)->publish_state(mac_address_s);
+
 esp32:
   board: wemos_d1_mini32
+  # ESPHome 2026.1 defaults ESP32 to ESP-IDF. Keeping explicit here avoids surprises.
+  # If you *need* Arduino for some reason, change type to arduino.
   framework:
-    type: arduino
+    type: esp-idf
 
-# Enable logging
 logger:
   level: INFO
+  # logs:
+  #   esp32_ble: DEBUG
+  #   json: DEBUG
 
-# Enable Home Assistant API
 api:
 
 ota:
@@ -24,11 +81,16 @@ improv_serial:
   next_url: http://{{ip_address}}
 
 wifi:
-  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  # If you're using ESPHome Dashboard "Adopt", it will inject SSID/pass.
+  # You can also hardcode here with !secret if you prefer.
   ap:
     password: "neewer-wifi-controller"
 
 captive_portal:
+
+dashboard_import:
+  package_import_url: github://DanielBaulig/neewer-controller/neewer-controller.yaml
+  import_full_config: false
 
 external_components:
   - source: github://litui/esphome-components@v1.0.1
@@ -37,85 +99,90 @@ external_components:
 globals:
   - id: paired_mac_address_store
     type: ESPPreferenceObject
+
   - id: closest_rssi
     type: int8_t
     initial_value: "-127"
+
   - id: closest_address
     type: std::string
-    initial_value: ""
+    initial_value: "\"\""
 
-dashboard_import:
-  package_import_url: github://DanielBaulig/neewer-controller/neewer-controller.yaml
-  import_full_config: false 
+  # NEW: persistent storage for dynamic select options (required for ESPHome 2025.11+)
+  - id: mac_options
+    type: std::vector<std::string>
+    initial_value: "std::vector<std::string>{\"None\"}"
 
-esphome:
-  name: "${name}"
-  name_add_mac_suffix: true
-
-  project:
-    name: DanielBaulig.neewer-controller
-    version: "1.2"
-
-  on_boot: 
-    then: 
-      - lambda: |-
-          // ble tracker will start off scanning
-          id(scanning).publish_state(true);
-
-          // Get previously paired mac address
-          id(paired_mac_address_store) = global_preferences->make_preference<uint64_t>(12345678);
-          uint64_t mac_address_raw = 0;
-          if (!id(paired_mac_address_store).load(&mac_address_raw) || !mac_address_raw) {
-            return;
-          }
-
-          // Reconnect to previously paired mac address
-          auto mac_address_s = str_snprintf("%02X:%02X:%02X:%02X:%02X:%02X", 17, (uint8_t) (mac_address_raw >> 40) & 0xff,
-              (uint8_t) (mac_address_raw >> 32) & 0xff, (uint8_t) (mac_address_raw >> 24) & 0xff,
-              (uint8_t) (mac_address_raw >> 16) & 0xff, (uint8_t) (mac_address_raw >> 8) & 0xff,
-              (uint8_t) (mac_address_raw >> 0) & 0xff);
-
-          auto select = id(mac_select);
-          select->traits.set_options({"None", mac_address_s.c_str()});
-          select->publish_state(mac_address_s);
-    
 esp32_ble_tracker:
   id: ble_tracker
   on_scan_end:
     then:
       - lambda: |-
           id(scanning).publish_state(false);
+
   on_ble_advertise:
     then:
       - lambda: |-
-            auto device = x;
+          auto device = x;
 
-            // Only process Neewer devices
-            if (device.get_name().rfind("NEEWER-", 0) != 0) {
-              return;
-            }
-
-            ESP_LOGD(
-              "neewer", 
-              "Found bluetooth device identifying as neewer device \"%s\" (MAC: %s, RSSI: %d)", 
-              device.get_name().c_str(), 
-              device.address_str().c_str(), 
+          if (device.get_name().rfind("NEEWER-", 0) != 0) {
+            ESP_LOGV(
+              "neewer",
+              "Saw bluetooth device identifying as \"%s\" (MAC: %s, RSSI: %d)",
+              device.get_name().c_str(),
+              device.address_str().c_str(),
               device.get_rssi()
             );
+            return;
+          }
 
-            // Track the closest device for pairing
-            if (device.get_rssi() > id(closest_rssi)) {
-              id(closest_address) = device.address_str();
-              id(closest_rssi) = device.get_rssi();
-              ESP_LOGI(
-                "neewer",
-                "New closest device: \"%s\" (MAC: %s, RSSI: %d)",
-                device.get_name().c_str(),
-                device.address_str().c_str(),
-                device.get_rssi()
-              );
-            }
-        
+          ESP_LOGD(
+            "neewer",
+            "Found bluetooth device identifying as neewer device \"%s\" (MAC: %s, RSSI: %d)",
+            device.get_name().c_str(),
+            device.address_str().c_str(),
+            device.get_rssi()
+          );
+
+          std::string s = device.address_str();
+
+          // Deduplicate using our persistent vector (can't rely on select traits anymore)
+          for (auto &opt : id(mac_options)) {
+            if (opt == s) return;
+          }
+
+          if (device.get_name() != "NEEWER-RGB660") {
+            ESP_LOGW(
+              "neewer",
+              "Neewer device \"%s\" does not identify as NEEWER-RGB660, is not officially supported and may not work as expected",
+              device.get_name().c_str()
+            );
+          }
+
+          ESP_LOGI(
+            "neewer",
+            "Adding new neewer device \"%s\" (MAC: %s, RSSI: %d) to address list",
+            device.get_name().c_str(),
+            device.address_str().c_str(),
+            device.get_rssi()
+          );
+
+          // Add to persistent list
+          id(mac_options).push_back(s);
+
+          // Rebuild select options with pointers into persistent strings
+          esphome::FixedVector<const char *> opt_ptrs;
+          opt_ptrs.init(id(mac_options).size());
+          for (auto &str : id(mac_options)) opt_ptrs.push_back(str.c_str());
+
+          id(mac_select)->traits.set_options(opt_ptrs);
+
+          // Track closest
+          if (device.get_rssi() > id(closest_rssi)) {
+            id(closest_address) = device.address_str();
+            id(closest_rssi) = device.get_rssi();
+          }
+
 select:
   - platform: template
     optimistic: true
@@ -125,45 +192,51 @@ select:
     id: mac_select
     entity_category: "config"
     name: Paired device
-    
     on_value:
       then:
         - lambda: |-
             auto ble_client = id(nw660_ble_client);
+
             std::string address_s = x;
             uint64_t address_raw = 0;
 
             if (address_s != "None") {
               address_s.erase(std::remove(address_s.begin(), address_s.end(), ':'), address_s.end());
-              optional<uint64_t> address_parsed = parse_hex<uint64_t>(address_s);
+              auto address_parsed = parse_hex(address_s);
+
               ESP_LOGD("neewer", "Changing BLE client address: %s", x.c_str());
+
               if (!address_parsed.has_value()) {
                 ESP_LOGW("neewer", "Invalid BLE client address: %s", x.c_str());
                 return;
               }
-              address_raw = address_parsed.value();  
+
+              address_raw = address_parsed.value();
             }
-            
+
             if (ble_client->connected()) {
               ble_client->disconnect();
             }
+
             ble_client->set_address(address_raw);
             id(paired_mac_address_store).save(&address_raw);
+
             if (address_raw) {
-              ESP_LOGI("neewer", "Connecting to BLE client: %s", x.c_str());
-            }     
+              ESP_LOGI("neewer", "Connecting to BLE client");
+            }
 
 interval:
   - interval: 5s
     then:
       - lambda: |-
           auto ble_client = id(nw660_ble_client);
+
           // Attempt to reconnect to paired light if we have lost connection
           if (!ble_client->connected() && id(paired).state && !id(scanning).state) {
             id(ble_tracker)->start_scan();
             id(scanning).publish_state(true);
           }
-    
+
 ble_client:
   - mac_address: 00:00:00:00:00:00
     id: nw660_ble_client
@@ -171,7 +244,6 @@ ble_client:
       then:
         - lambda: |-
             id(ble_tracker)->stop_scan();
-            id(scanning).publish_state(false);
 
 binary_sensor:
   - platform: template
@@ -179,12 +251,14 @@ binary_sensor:
     id: paired
     name: Paired
     lambda: |-
-        return id(mac_select).current_option() != "None";
+      // .state on Select is deprecated and removed in 2026.5; use current_option()
+      auto opt = id(mac_select).current_option();
+      return !opt.empty() && opt != "None";
   - platform: template
     entity_category: "diagnostic"
     name: Connected
     lambda: |-
-        return id(nw660_ble_client).connected();
+      return id(nw660_ble_client).connected();
   - platform: template
     entity_category: "diagnostic"
     name: Scanning
@@ -197,15 +271,26 @@ button:
     name: Reset
     disabled_by_default: true
     on_press:
-        then:
-          - lambda: |-
-              ESP_LOGI("neewer", "Resetting paired device and restarting...");
-              id(closest_address) = "";
-              id(closest_rssi) = -127;
-              uint64_t address_raw = 0;
-              id(paired_mac_address_store).save(&address_raw);
-              id(mac_select).publish_state("None");
-              App.safe_reboot();
+      then:
+        - lambda: |-
+            ESP_LOGI("neewer", "Resetting paired device and restarting...");
+
+            // Reset select + stored options
+            id(mac_options).clear();
+            id(mac_options).push_back("None");
+
+            esphome::FixedVector<const char *> opt_ptrs;
+            opt_ptrs.init(id(mac_options).size());
+            for (auto &s : id(mac_options)) opt_ptrs.push_back(s.c_str());
+
+            id(mac_select)->traits.set_options(opt_ptrs);
+            id(mac_select)->publish_state("None");
+
+            uint64_t address_raw = 0;
+            id(paired_mac_address_store).save(&address_raw);
+
+            App.safe_reboot();
+
   - platform: template
     entity_category: "config"
     name: Pair with closest device
@@ -213,22 +298,9 @@ button:
     on_press:
       then:
         - lambda: |-
-            if (id(closest_address) == "" || id(closest_address).length() == 0) {
-              ESP_LOGW("neewer", "No device found. Please use 'Rescan devices' first.");
-              return;
-            }
-            ESP_LOGI("neewer", "Pairing with closest device: %s (RSSI: %d)", id(closest_address).c_str(), id(closest_rssi));
-            
-            // Update select options to include the new device
-            auto select = id(mac_select);
-            auto current = select->current_option();
-            if (current != "None" && current != id(closest_address)) {
-              select->traits.set_options({"None", current.c_str(), id(closest_address).c_str()});
-            } else {
-              select->traits.set_options({"None", id(closest_address).c_str()});
-            }
-            
-            select->publish_state(id(closest_address));
+            if (id(closest_address).empty()) return;
+            id(mac_select)->publish_state(id(closest_address));
+
   - platform: template
     disabled_by_default: true
     entity_category: "config"
@@ -236,30 +308,27 @@ button:
     on_press:
       then:
         - lambda: |-
-            auto select = id(mac_select);
-            auto mac_address = select->current_option();
-            if (mac_address != "None") {
-              select->traits.set_options({"None", mac_address.c_str()});
-            } else {
-              select->traits.set_options({"None"});
-            }
-            
-            // Reset closest tracking
-            id(closest_address) = "";
-            id(closest_rssi) = -127;
-            
-            // Only start scan if not already scanning
-            if (!id(scanning).state) {
-              ESP_LOGI("neewer", "Starting device scan...");
-              id(ble_tracker)->start_scan();
-              id(scanning).publish_state(true);
-            } else {
-              ESP_LOGW("neewer", "Already scanning, please wait for current scan to complete...");
+            // Keep "None" and (if currently paired) keep that too
+            std::string keep = std::string(id(mac_select).current_option());
+
+            id(mac_options).clear();
+            id(mac_options).push_back("None");
+            if (!keep.empty() && keep != "None") {
+              id(mac_options).push_back(keep);
             }
 
+            esphome::FixedVector<const char *> opt_ptrs;
+            opt_ptrs.init(id(mac_options).size());
+            for (auto &s : id(mac_options)) opt_ptrs.push_back(s.c_str());
+
+            id(mac_select)->traits.set_options(opt_ptrs);
+
+            id(ble_tracker)->start_scan();
+            id(scanning).publish_state(true);
+
 light:
-- platform: neewerlight
-  name: "Neewer Light"
-  ble_client_id: nw660_ble_client
-  gamma_correct: 1.0
-  default_transition_length: 1s
+  - platform: neewerlight
+    name: "Neewer 660 RGB Light"
+    ble_client_id: nw660_ble_client
+    gamma_correct: 1.0
+    default_transition_length: 0s

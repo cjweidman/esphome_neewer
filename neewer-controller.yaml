@@ -14,7 +14,7 @@ esphome:
           id(scanning).publish_state(true);
 
           // Init prefs store
-          id(paired_mac_address_store) = global_preferences->make_preference(12345678);
+          id(paired_mac_address_store) = global_preferences->make_preference<uint64_t>(12345678);
 
           // Load previously paired MAC from flash (uint64)
           uint64_t mac_address_raw = 0;
@@ -202,7 +202,13 @@ select:
 
             if (address_s != "None") {
               address_s.erase(std::remove(address_s.begin(), address_s.end(), ':'), address_s.end());
-              auto address_parsed = parse_hex(address_s);
+
+              if (address_s.length() != 12) {
+                ESP_LOGW("neewer", "Invalid BLE client address length: %s", x.c_str());
+                return;
+              }
+
+              auto address_parsed = parse_hex<uint64_t>(address_s);
 
               ESP_LOGD("neewer", "Changing BLE client address: %s", x.c_str());
 
@@ -224,7 +230,6 @@ select:
             if (address_raw) {
               ESP_LOGI("neewer", "Connecting to BLE client");
             }
-
 interval:
   - interval: 5s
     then:

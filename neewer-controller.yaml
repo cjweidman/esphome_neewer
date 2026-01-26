@@ -231,12 +231,12 @@ select:
               ESP_LOGI("neewer", "Connecting to BLE client");
             }
 interval:
-  - interval: 5s
+  - interval: 15s
     then:
       - lambda: |-
           auto ble_client = id(nw660_ble_client);
 
-          // Attempt to reconnect to paired light if we have lost connection
+          // Only scan if we're paired, not connected, AND not already scanning.
           if (!ble_client->connected() && id(paired).state && !id(scanning).state) {
             id(ble_tracker)->start_scan();
             id(scanning).publish_state(true);
@@ -249,6 +249,7 @@ ble_client:
       then:
         - lambda: |-
             id(ble_tracker)->stop_scan();
+            id(scanning).publish_state(false);
 
 binary_sensor:
   - platform: template

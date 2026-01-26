@@ -6,23 +6,23 @@ esphome:
   name_add_mac_suffix: true
   project:
     name: DanielBaulig.neewer-controller
-    version: "0.2.3"
+    version: "1.1-esphome-2026.1.1-fix"
   on_boot:
     then:
       - lambda: |-
-          // BLE tracker will start off scanning
+          // Mark scanning true until on_scan_end fires (or we connect and stop scan)
           id(scanning).publish_state(true);
 
-          // Init prefs store
+          // Init prefs store (newer ESPHome requires a typed preference)
           id(paired_mac_address_store) = global_preferences->make_preference<uint64_t>(12345678);
 
           // Load previously paired MAC from flash (uint64)
           uint64_t mac_address_raw = 0;
           if (!id(paired_mac_address_store).load(&mac_address_raw) || !mac_address_raw) {
-            // Ensure we at least have "None" option
+            // Ensure at least "None" exists
             id(mac_options).clear();
             id(mac_options).push_back("None");
-            // Rebuild select options
+
             esphome::FixedVector<const char *> opt_ptrs;
             opt_ptrs.init(id(mac_options).size());
             for (auto &s : id(mac_options)) opt_ptrs.push_back(s.c_str());
@@ -43,12 +43,11 @@ esphome:
             (uint8_t) (mac_address_raw >> 0) & 0xff
           );
 
-          // Build persistent options list: ["None", "<paired-mac>"]
+          // Persistent options list: ["None", "<paired-mac>"]
           id(mac_options).clear();
           id(mac_options).push_back("None");
           id(mac_options).push_back(mac_address_s);
 
-          // Rebuild select options using pointer vector into persistent strings
           esphome::FixedVector<const char *> opt_ptrs;
           opt_ptrs.init(id(mac_options).size());
           for (auto &s : id(mac_options)) opt_ptrs.push_back(s.c_str());
@@ -56,18 +55,16 @@ esphome:
           id(mac_select)->traits.set_options(opt_ptrs);
           id(mac_select)->publish_state(mac_address_s);
 
+          // Start one scan pass on boot (use actions in YAML; lambda can't call actions)
+          // We'll rely on interval logic to start scans safely.
+
 esp32:
   board: wemos_d1_mini32
-  # ESPHome 2026.1 defaults ESP32 to ESP-IDF. Keeping explicit here avoids surprises.
-  # If you *need* Arduino for some reason, change type to arduino.
   framework:
-    type: esp-idf
+    type: arduino
 
 logger:
   level: INFO
-  # logs:
-  #   esp32_ble: DEBUG
-  #   json: DEBUG
 
 api:
 
@@ -81,8 +78,6 @@ improv_serial:
   next_url: http://{{ip_address}}
 
 wifi:
-  # If you're using ESPHome Dashboard "Adopt", it will inject SSID/pass.
-  # You can also hardcode here with !secret if you prefer.
   ap:
     password: "neewer-wifi-controller"
 
@@ -93,7 +88,7 @@ dashboard_import:
   import_full_config: false
 
 external_components:
-  - source: github://litui/esphome-components@v1.0.1
+  - source: github://litui/esphome-components@v1.0.0
     components: [ neewerlight ]
 
 globals:
@@ -108,37 +103,34 @@ globals:
     type: std::string
     initial_value: "\"\""
 
-  # NEW: persistent storage for dynamic select options (required for ESPHome 2025.11+)
+  # Persistent storage for dynamic select options (required for ESPHome 2025.11+)
   - id: mac_options
     type: std::vector<std::string>
     initial_value: "std::vector<std::string>{\"None\"}"
 
 esp32_ble_tracker:
   id: ble_tracker
+  scan_parameters:
+    continuous: false
   on_scan_end:
     then:
-      - lambda: |-
-          id(scanning).publish_state(false);
+      - binary_sensor.template.publish:
+          id: scanning
+          state: false
 
   on_ble_advertise:
     then:
       - lambda: |-
           auto device = x;
 
-          if (device.get_name().rfind("NEEWER-", 0) != 0) {
-            ESP_LOGV(
-              "neewer",
-              "Saw bluetooth device identifying as \"%s\" (MAC: %s, RSSI: %d)",
-              device.get_name().c_str(),
-              device.address_str().c_str(),
-              device.get_rssi()
-            );
+          // Match the model you said you have working historically
+          if (device.get_name() != "NEEWER-RGB480") {
             return;
           }
 
           ESP_LOGD(
             "neewer",
-            "Found bluetooth device identifying as neewer device \"%s\" (MAC: %s, RSSI: %d)",
+            "Found bluetooth device identifying as neewer light %s (MAC: %s, RSSI: %d)",
             device.get_name().c_str(),
             device.address_str().c_str(),
             device.get_rssi()
@@ -146,28 +138,19 @@ esp32_ble_tracker:
 
           std::string s = device.address_str();
 
-          // Deduplicate using our persistent vector (can't rely on select traits anymore)
+          // Deduplicate using our persistent vector
           for (auto &opt : id(mac_options)) {
             if (opt == s) return;
           }
 
-          if (device.get_name() != "NEEWER-RGB660") {
-            ESP_LOGW(
-              "neewer",
-              "Neewer device \"%s\" does not identify as NEEWER-RGB660, is not officially supported and may not work as expected",
-              device.get_name().c_str()
-            );
-          }
-
           ESP_LOGI(
             "neewer",
-            "Adding new neewer device \"%s\" (MAC: %s, RSSI: %d) to address list",
+            "Adding new neewer light %s (MAC: %s, RSSI: %d) to address list",
             device.get_name().c_str(),
             device.address_str().c_str(),
             device.get_rssi()
           );
 
-          // Add to persistent list
           id(mac_options).push_back(s);
 
           // Rebuild select options with pointers into persistent strings
@@ -230,26 +213,32 @@ select:
             if (address_raw) {
               ESP_LOGI("neewer", "Connecting to BLE client");
             }
-interval:
-  - interval: 15s
-    then:
-      - lambda: |-
-          auto ble_client = id(nw660_ble_client);
 
-          // Only scan if we're paired, not connected, AND not already scanning.
-          if (!ble_client->connected() && id(paired).state && !id(scanning).state) {
-            id(ble_tracker)->start_scan();
-            id(scanning).publish_state(true);
-          }
+interval:
+  # Safer scan scheduling (use actions, avoid calling start_scan() from lambdas)
+  - interval: 5s
+    then:
+      - if:
+          condition:
+            lambda: |-
+              return !id(nw660_ble_client).connected()
+                  && id(paired).state
+                  && !id(scanning).state;
+          then:
+            - esp32_ble_tracker.start_scan:
+            - binary_sensor.template.publish:
+                id: scanning
+                state: true
 
 ble_client:
   - mac_address: 00:00:00:00:00:00
     id: nw660_ble_client
     on_connect:
       then:
-        - lambda: |-
-            id(ble_tracker)->stop_scan();
-            id(scanning).publish_state(false);
+        - esp32_ble_tracker.stop_scan:
+        - binary_sensor.template.publish:
+            id: scanning
+            state: false
 
 binary_sensor:
   - platform: template
@@ -257,14 +246,15 @@ binary_sensor:
     id: paired
     name: Paired
     lambda: |-
-      // .state on Select is deprecated and removed in 2026.5; use current_option()
       auto opt = id(mac_select).current_option();
       return !opt.empty() && opt != "None";
+
   - platform: template
     entity_category: "diagnostic"
     name: Connected
     lambda: |-
       return id(nw660_ble_client).connected();
+
   - platform: template
     entity_category: "diagnostic"
     name: Scanning
@@ -281,7 +271,6 @@ button:
         - lambda: |-
             ESP_LOGI("neewer", "Resetting paired device and restarting...");
 
-            // Reset select + stored options
             id(mac_options).clear();
             id(mac_options).push_back("None");
 
@@ -329,12 +318,14 @@ button:
 
             id(mac_select)->traits.set_options(opt_ptrs);
 
-            id(ble_tracker)->start_scan();
-            id(scanning).publish_state(true);
+        - esp32_ble_tracker.start_scan:
+        - binary_sensor.template.publish:
+            id: scanning
+            state: true
 
 light:
   - platform: neewerlight
     name: "Neewer 660 RGB Light"
     ble_client_id: nw660_ble_client
     gamma_correct: 1.0
-    default_transition_length: 0s
+    default_transition_length: 1s

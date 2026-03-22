@@ -328,4 +328,4 @@ light:
     name: "Neewer 660 RGB Light"
     ble_client_id: nw660_ble_client
     gamma_correct: 1.0
-    default_transition_length: 1s
+    default_transition_length: 0s

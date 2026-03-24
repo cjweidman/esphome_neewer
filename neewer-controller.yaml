@@ -128,11 +128,7 @@ esp32_ble_tracker:
             }
 
             if (device.get_name() != "NEEWER-RGB660") {
-              ESP_LOGW(
-                "neewer",
-                "Neewer device \"%s\" does not identify as NEEWER-RGB660, is not officially supported and may not work as expected",
-                device.get_name().c_str()
-              );
+              ESP_LOGW("neewer", "Non-RGB660 neewer device, proceeding anyway");
             }
 
             ESP_LOGI(

@@ -6,6 +6,8 @@ esp32:
   board: wemos_d1_mini32
   framework:
     type: arduino
+    version: recommended
+    platform_version: https://github.com/pioarduino/platform-espressif32/releases/download/51.03.07/platform-espressif32.zip
 
 # Enable logging
 logger:
